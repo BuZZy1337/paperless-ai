@@ -88,6 +88,10 @@ module.exports = {
     deploymentName: process.env.AZURE_DEPLOYMENT_NAME || '',
     apiVersion: process.env.AZURE_API_VERSION || '2023-05-15'
   },
+  gemini: {
+    apiKey: process.env.GEMINI_API_KEY || '',
+    model: process.env.GEMINI_MODEL || 'gemini-1.5-flash'
+  },
   customFields: process.env.CUSTOM_FIELDS || '',
   aiProvider: process.env.AI_PROVIDER || 'openai',
   scanInterval: process.env.SCAN_INTERVAL || '*/30 * * * *',

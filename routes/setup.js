@@ -1903,7 +1903,9 @@ router.get('/setup', async (req, res) => {
       AZURE_ENDPOINT: process.env.AZURE_ENDPOINT|| '',
       AZURE_API_KEY: process.env.AZURE_API_KEY || '',
       AZURE_DEPLOYMENT_NAME: process.env.AZURE_DEPLOYMENT_NAME || '',
-      AZURE_API_VERSION: process.env.AZURE_API_VERSION || ''
+      AZURE_API_VERSION: process.env.AZURE_API_VERSION || '',
+	  GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
+	  GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash'
     };
 
     // Check both configuration and users
@@ -2704,6 +2706,8 @@ router.get('/settings', async (req, res) => {
     AZURE_API_KEY: process.env.AZURE_API_KEY || '',
     AZURE_DEPLOYMENT_NAME: process.env.AZURE_DEPLOYMENT_NAME || '',
     AZURE_API_VERSION: process.env.AZURE_API_VERSION || '',
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
+    GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
     RESTRICT_TO_EXISTING_TAGS: process.env.RESTRICT_TO_EXISTING_TAGS || 'no',
     RESTRICT_TO_EXISTING_CORRESPONDENTS: process.env.RESTRICT_TO_EXISTING_CORRESPONDENTS || 'no',
     RESTRICT_TO_EXISTING_DOCUMENT_TYPES: process.env.RESTRICT_TO_EXISTING_DOCUMENT_TYPES || 'no',
@@ -3618,7 +3622,9 @@ router.post('/setup', express.json(), async (req, res) => {
       azureEndpoint,
       azureApiKey,
       azureDeploymentName,
-      azureApiVersion
+      azureApiVersion,
+      geminiApiKey,
+      geminiModel
     } = req.body;
 
     // Log setup request with sensitive data redacted
@@ -3740,7 +3746,9 @@ router.post('/setup', express.json(), async (req, res) => {
       AZURE_ENDPOINT: azureEndpoint || '',
       AZURE_API_KEY: azureApiKey || '',
       AZURE_DEPLOYMENT_NAME: azureDeploymentName || '',
-      AZURE_API_VERSION: azureApiVersion || ''
+      AZURE_API_VERSION: azureApiVersion || '',
+	  GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
+      GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash'
     };
     
     // Validate AI provider config
@@ -3779,7 +3787,13 @@ router.post('/setup', express.json(), async (req, res) => {
           error: 'Azure connection failed. Please check URL, API Key, Deployment Name and API Version.'
         });
       }
-    }
+    } else if (aiProvider === 'gemini') {
+      if (!geminiApiKey) {
+        return res.status(400).json({
+          error: 'Gemini API Key is required.'
+        });
+      }
+	}
 
     // Save configuration
     await setupService.saveConfig(config);
@@ -4025,7 +4039,9 @@ router.post('/settings', express.json(), async (req, res) => {
       azureEndpoint,
       azureApiKey,
       azureDeploymentName,
-      azureApiVersion
+      azureApiVersion,
+      geminiApiKey,
+      geminiModel
     } = req.body;
 
     //replace equal char in system prompt
@@ -4069,6 +4085,8 @@ router.post('/settings', express.json(), async (req, res) => {
       AZURE_API_KEY: process.env.AZURE_API_KEY || '',
       AZURE_DEPLOYMENT_NAME: process.env.AZURE_DEPLOYMENT_NAME || '',
       AZURE_API_VERSION: process.env.AZURE_API_VERSION || '',
+	  GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
+      GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
       RESTRICT_TO_EXISTING_TAGS: process.env.RESTRICT_TO_EXISTING_TAGS || 'no',
       RESTRICT_TO_EXISTING_CORRESPONDENTS: process.env.RESTRICT_TO_EXISTING_CORRESPONDENTS || 'no',
       RESTRICT_TO_EXISTING_DOCUMENT_TYPES: process.env.RESTRICT_TO_EXISTING_DOCUMENT_TYPES || 'no',
@@ -4182,6 +4200,9 @@ router.post('/settings', express.json(), async (req, res) => {
         if(azureApiKey) updatedConfig.AZURE_API_KEY = azureApiKey;
         if(azureDeploymentName) updatedConfig.AZURE_DEPLOYMENT_NAME = azureDeploymentName;
         if(azureApiVersion) updatedConfig.AZURE_API_VERSION = azureApiVersion;
+      } else if (aiProvider === 'gemini') {                 // NEU START
+        if (geminiApiKey) updatedConfig.GEMINI_API_KEY = geminiApiKey;
+        if (geminiModel) updatedConfig.GEMINI_MODEL = geminiModel;
       }
     }
 

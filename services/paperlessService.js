@@ -965,6 +965,17 @@ class PaperlessService {
     }
   }
 
+  async updateDocumentContent(documentId, content) {
+    this.initialize();
+    try {
+      console.log(`[DEBUG] Updating content field for document ${documentId}...`);
+      await this.client.patch(`/documents/${documentId}/`, { content });
+      console.log(`[SUCCESS] Content updated for document ${documentId}`);
+    } catch (error) {
+      console.error(`[ERROR] Failed to update content for document ${documentId}:`, error.message);
+    }
+  }
+
   async getDocument(documentId) {
     this.initialize();
     try {
@@ -1304,8 +1315,12 @@ async getOrCreateDocumentType(name) {
       }
 
       if (currentDoc.correspondent && updates.correspondent) {
-        console.log('[DEBUG] Document already has a correspondent, keeping existing one:', currentDoc.correspondent);
-        delete updates.correspondent;
+        if (config.overwriteExistingCorrespondent === 'yes') {
+          console.log(`[DEBUG] Overwriting existing correspondent ${currentDoc.correspondent} with AI suggestion: ${updates.correspondent}`);
+        } else {
+          console.log('[DEBUG] Document already has a correspondent, keeping existing one:', currentDoc.correspondent);
+          delete updates.correspondent;
+        }
       }
 
       let updateData;

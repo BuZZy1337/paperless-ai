@@ -40,6 +40,7 @@ class FormManager {
         this.systemPrompt = document.getElementById('systemPrompt');
         this.systemPromptBtn = document.getElementById('systemPromptBtn');
         this.disableAutomaticProcessing = document.getElementById('disableAutomaticProcessing');
+        this.activateCorrespondents = document.getElementById('activateCorrespondents');
         this.initialize();
     }
 
@@ -47,23 +48,34 @@ class FormManager {
         this.toggleProviderSettings();
         this.toggleTagsInput();
         this.handleDisableAutomaticProcessing();
-        
+
         this.aiProvider.addEventListener('change', () => this.toggleProviderSettings());
-        this.tokenLimit.addEventListener('input', () => this.validateTokenLimit()); 
-        this.responseTokens.addEventListener('input', () => this.validateResponseTokens()); 
+        this.tokenLimit.addEventListener('input', () => this.validateTokenLimit());
+        this.responseTokens.addEventListener('input', () => this.validateResponseTokens());
         this.showTags.addEventListener('change', () => this.toggleTagsInput());
         this.aiProcessedTag.addEventListener('change', () => this.toggleAiTagInput());
         this.usePromptTags.addEventListener('change', () => this.togglePromptTagsInput());
         this.disableAutomaticProcessing.addEventListener('change', () => this.handleDisableAutomaticProcessing());
-        
+        this.activateCorrespondents.addEventListener('change', () => this.toggleOverwriteCorrespondentSection());
+
         this.initializePasswordToggles();
 
         if (this.usePromptTags.value === 'yes') {
             this.disablePromptElements();
         }
-        
+
         this.toggleAiTagInput();
         this.togglePromptTagsInput();
+    }
+
+    toggleOverwriteCorrespondentSection() {
+        const section = document.getElementById('overwriteExistingCorrespondentSection');
+        if (this.activateCorrespondents.checked) {
+            section.classList.remove('hidden');
+        } else {
+            section.classList.add('hidden');
+            document.getElementById('overwriteExistingCorrespondent').checked = false;
+        }
     }
 
     validateTokenLimit() {

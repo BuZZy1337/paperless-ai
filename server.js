@@ -201,9 +201,14 @@ async function processDocument(doc, existingTags, existingCorrespondentList, exi
     paperlessService.getDocument(doc.id)
   ]);
 
-  if (!content || !content.length >= 10) {
-    console.log(`[DEBUG] Document ${doc.id} has no content, skipping analysis`);
-    return null;
+  const noContent = !content || !content.length >= 10;
+  if (noContent) {
+    if (config.aiProvider !== 'gemini') {
+      console.log(`[DEBUG] Document ${doc.id} has no content, skipping analysis`);
+      return null;
+    }
+    console.log(`[DEBUG] Document ${doc.id} has no content, but Gemini will extract text directly from PDF`);
+    content = '';
   }
 
   if (content.length > 50000) {
@@ -211,11 +216,19 @@ async function processDocument(doc, existingTags, existingCorrespondentList, exi
   }
 
   const aiService = AIServiceFactory.getService();
-  const analysis = await aiService.analyzeDocument(content, existingTags, existingCorrespondentList, existingDocumentTypesList, doc.id);
+  const options = noContent ? { extractContent: true } : {};
+  const analysis = await aiService.analyzeDocument(content, existingTags, existingCorrespondentList, existingDocumentTypesList, doc.id, null, options);
   console.log('Response from AI service:', JSON.stringify(analysis.document));
   if (analysis.error) {
     throw new Error(`[ERROR] Document analysis failed: ${analysis.error}`);
   }
+
+  if (analysis.document.extracted_content) {
+    console.log(`[DEBUG] Writing extracted content back to Paperless for document ${doc.id}`);
+    await paperlessService.updateDocumentContent(doc.id, analysis.document.extracted_content);
+    delete analysis.document.extracted_content;
+  }
+
   await documentModel.setProcessingStatus(doc.id, doc.title, 'complete');
   return { analysis, originalData };
 }

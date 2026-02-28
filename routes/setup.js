@@ -4031,6 +4031,7 @@ router.post('/settings', express.json(), async (req, res) => {
       customModel,
       activateTagging,
       activateCorrespondents,
+      overwriteExistingCorrespondent,
       activateDocumentType,
       activateTitle,
       activateCustomFields,
@@ -4076,6 +4077,7 @@ router.post('/settings', express.json(), async (req, res) => {
       CUSTOM_MODEL: process.env.CUSTOM_MODEL || '',
       ACTIVATE_TAGGING: process.env.ACTIVATE_TAGGING || 'yes',
       ACTIVATE_CORRESPONDENTS: process.env.ACTIVATE_CORRESPONDENTS || 'yes',
+      OVERWRITE_EXISTING_CORRESPONDENT: process.env.OVERWRITE_EXISTING_CORRESPONDENT || 'no',
       ACTIVATE_DOCUMENT_TYPE: process.env.ACTIVATE_DOCUMENT_TYPE || 'yes',
       ACTIVATE_TITLE: process.env.ACTIVATE_TITLE || 'yes',
       ACTIVATE_CUSTOM_FIELDS: process.env.ACTIVATE_CUSTOM_FIELDS || 'yes',
@@ -4233,6 +4235,7 @@ router.post('/settings', express.json(), async (req, res) => {
       // Handle limit functions
       updatedConfig.ACTIVATE_TAGGING = activateTagging ? 'yes' : 'no';
       updatedConfig.ACTIVATE_CORRESPONDENTS = activateCorrespondents ? 'yes' : 'no';
+      updatedConfig.OVERWRITE_EXISTING_CORRESPONDENT = overwriteExistingCorrespondent ? 'yes' : 'no';
       updatedConfig.ACTIVATE_DOCUMENT_TYPE = activateDocumentType ? 'yes' : 'no';
       updatedConfig.ACTIVATE_TITLE = activateTitle ? 'yes' : 'no';
       updatedConfig.ACTIVATE_CUSTOM_FIELDS = activateCustomFields ? 'yes' : 'no';

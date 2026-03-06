@@ -107,7 +107,12 @@ class GeminiService {
 
       // 5. Gemini Modell aufrufen
       const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
-      const model = this.genAI.getGenerativeModel({ model: modelName });
+      const model = this.genAI.getGenerativeModel({ 
+        model: modelName,
+        generationConfig: {
+          temperature: 0.0
+        }
+      });
 
       console.log(`[DEBUG] Requesting generation from ${modelName}...`);
       const result = await model.generateContent([
@@ -165,7 +170,12 @@ class GeminiService {
     try {
       this.initialize();
       const modelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
-      const model = this.genAI.getGenerativeModel({ model: modelName });
+      const model = this.genAI.getGenerativeModel({ 
+        model: modelName,
+        generationConfig: {
+          temperature: 0.0
+        }
+      });
       
       const musthavePrompt = `
       Return the result EXCLUSIVELY as a JSON object:  

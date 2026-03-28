@@ -236,16 +236,13 @@ async function processDocument(doc, existingTags, existingCorrespondentList, exi
 async function buildUpdateData(analysis, doc) {
   const updateData = {};
 
-  console.log('TEST: ', config.addAIProcessedTag)
-  console.log('TEST 2: ', config.addAIProcessedTags)
-  
   // Initialize an empty array for our final list of tags
   let allTagsToProcess = [];
 
   // Only process tags if tagging is activated
   if (config.limitFunctions?.activateTagging !== 'no') {
     let aiTags = analysis.document.tags || [];
-    
+
     // Handle cases where Gemini returns a comma-separated string instead of an array
     if (!Array.isArray(aiTags)) {
       if (typeof aiTags === 'string') {
@@ -254,34 +251,19 @@ async function buildUpdateData(analysis, doc) {
         aiTags = [];
       }
     }
-    
+
+    console.log(`[DEBUG] Tags suggested by AI: [${aiTags.join(', ')}]`);
+
     // Add the AI generated tags to our list
     allTagsToProcess = allTagsToProcess.concat(aiTags);
-	
-    // Also check if we should add the default "AI Processed" tag(s) with a safe string comparison
-    const addProcessedTag = String(config.addAIProcessedTag).trim().toLowerCase();
-    if (addProcessedTag === 'yes' && config.addAIProcessedTags) {
-      console.log('[DEBUG] Adding default AI processed tags alongside AI generated tags');
-      const defaultTags = String(config.addAIProcessedTags).split(',').map(tag => tag.trim()).filter(tag => tag);
-      allTagsToProcess = allTagsToProcess.concat(defaultTags);
-    }
 
+    console.log(`[DEBUG] All tags to process: [${allTagsToProcess.join(', ')}]`);
     const { tagIds, errors } = await paperlessService.processTags(allTagsToProcess);
     if (errors.length > 0) {
       console.warn('[ERROR] Some tags could not be processed:', errors);
     }
+    console.log(`[DEBUG] Resolved tag IDs: [${tagIds.join(', ')}]`);
     updateData.tags = tagIds;
-  } else if (config.limitFunctions?.activateTagging === 'no' && String(config.addAIProcessedTag).trim().toLowerCase() === 'yes') {
-    // Add AI processed tags to the document (processTags function awaits a tags array)
-    // get tags from .env file and split them by comma and make an array
-    console.log('[DEBUG] Tagging is deactivated but AI processed tag will be added');
-    const tags = String(config.addAIProcessedTags).split(',').map(tag => tag.trim()).filter(tag => tag);
-    const { tagIds, errors } = await paperlessService.processTags(tags);
-    if (errors.length > 0) {
-      console.warn('[ERROR] Some tags could not be processed:', errors);
-    }
-    updateData.tags = tagIds;
-    console.log('[DEBUG] Tagging is deactivated');
   }
 
   // Only process title if title generation is activated
@@ -362,6 +344,16 @@ async function buildUpdateData(analysis, doc) {
   // Always include language if provided as it's a core field
   if (analysis.document.language) {
     updateData.language = analysis.document.language;
+  }
+
+  // Guaranteed last step: always add AI-processed tag if configured, regardless of tagging settings
+  if (String(config.addAIProcessedTag).trim().toLowerCase() === 'yes' && config.addAIProcessedTags) {
+    const aiTagNames = String(config.addAIProcessedTags).split(',').map(t => t.trim()).filter(Boolean);
+    const { tagIds: aiTagIds } = await paperlessService.processTags(aiTagNames);
+    if (aiTagIds.length > 0) {
+      updateData.tags = [...new Set([...(updateData.tags || []), ...aiTagIds])];
+      console.log(`[DEBUG] AI-processed tag(s) guaranteed: [${aiTagIds.join(', ')}]`);
+    }
   }
 
   return updateData;

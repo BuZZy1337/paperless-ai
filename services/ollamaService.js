@@ -115,7 +115,7 @@ class OllamaService {
                 customFieldsObj.custom_fields.forEach((field, index) => {
                     customFieldsTemplate[index] = {
                         field_name: field.value,
-                        value: "Fill in the value based on your analysis"
+                        value: `Fill this field based on the document content. If the system prompt defines specific rules for '${field.value}', apply them EXACTLY. Otherwise, use the field name as guidance to extract the most relevant value from the document.`
                     };
                 });
 
@@ -275,7 +275,7 @@ class OllamaService {
         customFieldsObj.custom_fields.forEach((field, index) => {
             customFieldsTemplate[index] = {
                 field_name: field.value,
-                value: "Fill in the value based on your analysis"
+                value: "Fill in the value based on the instructions in the prompt above! It is VERY IMPORTANT to stick to the rules defined in the prompt!"
             };
         });
 
@@ -289,6 +289,7 @@ class OllamaService {
         const correspondentInstruction = (config.limitFunctions?.activateCorrespondents !== 'no' && correspondentList && correspondentList.length > 0)
             ? `IMPORTANT: The following correspondents already exist in the system: ${correspondentList.join(', ')}\nWhen identifying the correspondent, prefer an existing one if the document's sender is a close match. Use EXACTLY that existing name (e.g. if the document shows "MediaMarkt Saturn Media GmbH" and "MediaMarkt" is in the list, return "MediaMarkt"). Only return a completely new name if none of the existing correspondents are a reasonable match.`
             : '';
+        const mustHavePrompt = config.mustHavePrompt.replace('%CUSTOMFIELDS%', customFieldsStr).replace('%EXISTING_CORRESPONDENTS%', correspondentInstruction);
 
         // Get system prompt based on configuration
         if (config.useExistingData === 'yes' && config.restrictToExistingTags === 'no' && config.restrictToExistingCorrespondents === 'no') {
@@ -319,11 +320,10 @@ class OllamaService {
             Pre-existing tags: ${existingTagsList}\n\n
             Pre-existing correspondents: ${existingCorrespondentList}\n\n
             Pre-existing document types: ${existingDocumentTypesList}\n\n
-            ` + process.env.SYSTEM_PROMPT + '\n\n' + config.mustHavePrompt.replace('%CUSTOMFIELDS%', customFieldsStr).replace('%EXISTING_CORRESPONDENTS%', correspondentInstruction);
+            ` + process.env.SYSTEM_PROMPT + '\n\n' + mustHavePrompt;
             promptTags = '';
         } else {
-            config.mustHavePrompt = config.mustHavePrompt.replace('%CUSTOMFIELDS%', customFieldsStr).replace('%EXISTING_CORRESPONDENTS%', correspondentInstruction);
-            systemPrompt = process.env.SYSTEM_PROMPT + '\n\n' + config.mustHavePrompt;
+            systemPrompt = process.env.SYSTEM_PROMPT + '\n\n' + mustHavePrompt;
             promptTags = '';
         }
 
@@ -413,7 +413,7 @@ class OllamaService {
         customFieldsObj.custom_fields.forEach((field, index) => {
             customFieldsTemplate[index] = {
                 field_name: field.value,
-                value: "Fill in the value based on your analysis"
+                value: "Fill in the value based on the instructions in the prompt above! It is VERY IMPORTANT to stick to the rules defined in the prompt!"
             };
         });
 
@@ -434,9 +434,13 @@ class OllamaService {
             You are a document analyzer. Your task is to analyze documents and extract relevant information. You do not ask back questions. 
             YOU MUSTNOT: Ask for additional information or clarification, or ask questions about the document, or ask for additional context.
             YOU MUSTNOT: Return a response without the desired JSON format.
-            YOU MUST: Return the result EXCLUSIVELY as a JSON object. The Tags, Title and Document_Type MUST be in the language that is used in the document.:
-            IMPORTANT: The custom_fields are optional and can be left out if not needed, only try to fill out the values if you find a matching information in the document.
-            Do not change the value of field_name, only fill out the values. If the field is about money only add the number without currency and always use a . for decimal places.
+            YOU MUST: Return the result EXCLUSIVELY as a JSON object. The Tags, Title and Document_Type MUST be in the language that is used in the document.
+            IMPORTANT: The custom_fields are optional and can be left out if not needed. Do not change the value of "field_name". If a field is about money, only add the number without currency and always use a . for decimal places.
+
+            CRITICAL JSON FORMATTING RULES:
+            1. STRICT RULE ENFORCEMENT: You MUST populate each custom field's "value" EXACTLY according to the specific rules defined anywhere in the prompt above. Do not simplify, summarize, or ignore complex conditions!
+            2. LINE BREAKS (\n): If the prompt instructions for a custom field require structured text (like paragraphs or lists), you are explicitly REQUIRED to use the escape sequence "\n" inside the JSON string. Never collapse structured text into a single flat line!
+            3. DATE FORMAT OVERRIDES: While the root "document_date" must be ISO (YYYY-MM-DD), any custom field must strictly follow its own specific formatting rules defined in the prompt (e.g., European formats like DD.MM.YYYY). Do NOT force the ISO format onto custom fields if the prompt requests otherwise!
             {
                 "title": "xxxxx",
                 "correspondent": "xxxxxxxx",

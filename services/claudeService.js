@@ -1,43 +1,43 @@
-const { GoogleGenAI } = require('@google/genai');
+const Anthropic = require('@anthropic-ai/sdk');
 const config = require('../config/config');
 const paperlessService = require('./paperlessService');
 const RestrictionPromptService = require('./restrictionPromptService');
 
-class GeminiService {
+class ClaudeService {
   constructor() {
-    this.ai = null;
+    this.client = null;
   }
 
   initialize() {
-    const apiKey = process.env.GEMINI_API_KEY || config.custom.apiKey;
-    if (!this.ai && apiKey) {
-      this.ai = new GoogleGenAI({ apiKey });
+    const apiKey = process.env.CLAUDE_API_KEY;
+    if (!this.client && apiKey) {
+      this.client = new Anthropic({ apiKey });
     }
   }
 
-  async analyzeDocument(content, existingTags = [], existingCorrespondentList = [], existingDocumentTypesList = [], id, customPrompt = null, options = {}) {
+  async analyzeDocument(_content, existingTags = [], existingCorrespondentList = [], existingDocumentTypesList = [], id, customPrompt = null, options = {}) {
     try {
       this.initialize();
       const now = new Date();
       const timestamp = now.toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' });
 
-      if (!this.ai) {
-        throw new Error('Gemini client not initialized - missing API key');
+      if (!this.client) {
+        throw new Error('Claude client not initialized - missing API key');
       }
 
-      console.log(`[DEBUG] [${timestamp}] Starting native Gemini analysis for document ${id}`);
+      console.log(`[DEBUG] [${timestamp}] Starting Claude analysis for document ${id}`);
 
-      // 1. Original-PDF von Paperless herunterladen
+      // 1. Download original PDF from Paperless
       const pdfBuffer = await paperlessService.downloadDocument(id);
       if (!pdfBuffer) {
         throw new Error(`Unable to download PDF for Document ${id}.`);
       }
 
-      // 2 & 3. PDF direkt als Base64 encodieren (inlineData statt Upload via File API)
-      console.log(`[DEBUG] Converting PDF to Base64 inlineData...`);
+      // 2. PDF als Base64 encodieren
+      console.log(`[DEBUG] Converting PDF to Base64...`);
       const base64Pdf = pdfBuffer.toString('base64');
 
-      // 4. Prompt zusammenbauen
+      // 3. Prompt zusammenbauen (identisch zu GeminiService)
       let customFieldsObj;
       try {
         customFieldsObj = JSON.parse(process.env.CUSTOM_FIELDS || '{"custom_fields": []}');
@@ -99,69 +99,81 @@ class GeminiService {
       }
 
       if (process.env.DEBUG_LOGGING === 'yes') {
-        console.log(`[DEBUG] Full system prompt sent to Gemini:\n${'─'.repeat(60)}\n${systemPrompt.replace(/\n\n/g, '\n \n')}\n${'─'.repeat(60)}`);
+        console.log(`[DEBUG] Full system prompt sent to Claude:\n${'─'.repeat(60)}\n${systemPrompt.replace(/\n\n/g, '\n \n')}\n${'─'.repeat(60)}`);
       }
 
-      // 5. Gemini Modell aufrufen
-      const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-      const thinkingBudget = parseInt(process.env.GEMINI_THINKING_BUDGET ?? '12000');
-      console.log(`[DEBUG] Requesting generation from ${modelName} (thinkingBudget: ${thinkingBudget})...`);
+      // 4. Claude API aufrufen
+      const modelName = process.env.CLAUDE_MODEL || 'claude-sonnet-4-6';
+      const thinkingEnabled = process.env.CLAUDE_EXTENDED_THINKING === 'yes';
 
-      const geminiConfig = {
-        thinkingConfig: {
-          thinkingBudget: thinkingBudget,
-        },
-        temperature: parseFloat(process.env.GEMINI_TEMPERATURE || '0.0'),
-        responseMimeType: 'text/plain',
-        // WICHTIG: Die SystemInstruction als Array verpackt, genau wie im AI Studio Export
-        systemInstruction: [{ text: systemPrompt }],
-      };
+      console.log(`[DEBUG] Requesting generation from ${modelName} (thinking: ${thinkingEnabled})...`);
 
-      if (process.env.GEMINI_MAX_OUTPUT_TOKENS) {
-        geminiConfig.maxOutputTokens = parseInt(process.env.GEMINI_MAX_OUTPUT_TOKENS);
-      }
-      if (process.env.GEMINI_TOP_P) {
-        geminiConfig.topP = parseFloat(process.env.GEMINI_TOP_P);
-      }
-      if (process.env.GEMINI_TOP_K) {
-        geminiConfig.topK = parseInt(process.env.GEMINI_TOP_K);
+      const thinkingBudget = parseInt(process.env.CLAUDE_THINKING_BUDGET || '10000');
+      let maxTokens = parseInt(process.env.CLAUDE_MAX_TOKENS || '16000');
+      if (thinkingEnabled && maxTokens <= thinkingBudget) {
+        maxTokens = thinkingBudget + 1000;
+        console.warn(`[WARN] CLAUDE_MAX_TOKENS (${maxTokens - 1000}) must be greater than CLAUDE_THINKING_BUDGET (${thinkingBudget}). Auto-corrected to ${maxTokens}.`);
       }
 
-      const response = await this.ai.models.generateContent({
+      const params = {
         model: modelName,
-        contents: [
+        max_tokens: maxTokens,
+        system: systemPrompt,
+        messages: [
           {
             role: 'user',
-            parts: [
+            content: [
               {
-                inlineData: {
+                type: 'document',
+                source: {
+                  type: 'base64',
+                  media_type: 'application/pdf',
                   data: base64Pdf,
-                  mimeType: 'application/pdf',
-                }
-              }
-              // Absichtlich keinen extra Text-Prompt hier, exakt wie im AI Studio Export!
-            ]
-          }
+                },
+              },
+            ],
+          },
         ],
-        config: geminiConfig,
-      });
-
-      const text = response.text;
-      const usage = response.usageMetadata || {};
-      const metrics = {
-        promptTokens: usage.promptTokenCount || 0,
-        completionTokens: usage.candidatesTokenCount || 0,
-        totalTokens: usage.totalTokenCount || 0
       };
 
-      const thinkingTokens = usage.thoughtsTokenCount || 0;
-      console.log(`[DEBUG] Token usage - Prompt: ${metrics.promptTokens}, Completion: ${metrics.completionTokens}, Thinking: ${thinkingTokens}, Total: ${metrics.totalTokens}`);
-
-      if (process.env.DEBUG_LOGGING === 'yes') {
-        console.log(`[DEBUG] Raw Gemini response:\n${'─'.repeat(60)}\n${text}\n${'─'.repeat(60)}`);
+      if (thinkingEnabled) {
+        params.thinking = {
+          type: 'enabled',
+          budget_tokens: thinkingBudget,
+        };
+        params.temperature = 1.0; // required by Anthropic when thinking is enabled
+      } else if (process.env.CLAUDE_USE_TOP_P === 'yes') {
+        // top_p and temperature are mutually exclusive in the Anthropic API
+        params.top_p = parseFloat(process.env.CLAUDE_TOP_P || '0.9');
+      } else {
+        params.temperature = parseFloat(process.env.CLAUDE_TEMPERATURE || '1.0');
+      }
+      if (process.env.CLAUDE_TOP_K) {
+        params.top_k = parseInt(process.env.CLAUDE_TOP_K);
       }
 
-      // 7. JSON bereinigen und parsen
+      const message = await this.client.messages.create(params);
+
+      const metrics = {
+        promptTokens: message.usage?.input_tokens || 0,
+        completionTokens: message.usage?.output_tokens || 0,
+        totalTokens: (message.usage?.input_tokens || 0) + (message.usage?.output_tokens || 0),
+      };
+
+      console.log(`[DEBUG] Token usage - Prompt: ${metrics.promptTokens}, Completion: ${metrics.completionTokens}, Total: ${metrics.totalTokens}`);
+
+      // 5. Text-Block aus Response extrahieren (bei Thinking gibt es mehrere Content-Blöcke)
+      const textBlock = message.content.find(b => b.type === 'text');
+      if (!textBlock) {
+        throw new Error('No text block in Claude response');
+      }
+      const text = textBlock.text;
+
+      if (process.env.DEBUG_LOGGING === 'yes') {
+        console.log(`[DEBUG] Raw Claude response:\n${'─'.repeat(60)}\n${text}\n${'─'.repeat(60)}`);
+      }
+
+      // 6. JSON bereinigen und parsen
       let jsonContent = text.replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim();
 
       let parsedResponse;
@@ -169,7 +181,7 @@ class GeminiService {
         parsedResponse = JSON.parse(jsonContent);
       } catch (error) {
         console.error('Failed to parse JSON response:', error);
-        throw new Error('Invalid JSON response from Gemini');
+        throw new Error('Invalid JSON response from Claude');
       }
 
       if (parsedResponse.reasoning) {
@@ -180,86 +192,33 @@ class GeminiService {
       return {
         document: parsedResponse,
         metrics: metrics,
-        truncated: false
+        truncated: false,
       };
 
     } catch (error) {
-      console.error('Failed to analyze document with Gemini:', error);
+      console.error('Failed to analyze document with Claude:', error);
       return {
         document: { tags: [], correspondent: null },
         metrics: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-        error: error.message
+        error: error.message,
       };
     }
-  }
-
-  async analyzePlayground(content, prompt) {
-    try {
-      this.initialize();
-      const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-
-      const musthavePrompt = `
-      Return the result EXCLUSIVELY as a JSON object:
-      {
-        "title": "xxxxx",
-        "correspondent": "xxxxxxxx",
-        "tags": ["Tag1", "Tag2"],
-        "document_date": "YYYY-MM-DD",
-        "language": "en/de/es/..."
-      }`;
-
-      const response = await this.ai.models.generateContent({
-        model: modelName,
-        contents: content,
-        config: {
-          systemInstruction: prompt + '\n\n' + musthavePrompt,
-          temperature: 1.0,
-          thinkingConfig: { thinkingBudget: -1 },
-        },
-      });
-
-      const usage = response.usageMetadata || {};
-      const metrics = {
-        promptTokens: usage.promptTokenCount || 0,
-        completionTokens: usage.candidatesTokenCount || 0,
-        totalTokens: usage.totalTokenCount || 0
-      };
-
-      let jsonContent = response.text.replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim();
-      return {
-        document: JSON.parse(jsonContent),
-        metrics: metrics,
-        truncated: false
-      };
-    } catch (error) {
-      console.error('Failed to analyze playground with Gemini:', error);
-      throw error;
-    }
-  }
-
-  async generateText(prompt) {
-    this.initialize();
-    const modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
-    const response = await this.ai.models.generateContent({
-      model: modelName,
-      contents: prompt,
-    });
-    return response.text;
   }
 
   async checkStatus() {
     try {
       this.initialize();
-      if (!this.ai) throw new Error('Client not initialized');
-      await this.ai.models.generateContent({
-        model: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
-        contents: 'Test',
+      if (!this.client) throw new Error('Client not initialized');
+      await this.client.messages.create({
+        model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
+        max_tokens: 10,
+        messages: [{ role: 'user', content: 'Test' }],
       });
-      return { status: 'ok', model: process.env.GEMINI_MODEL || 'gemini-2.5-flash' };
+      return { status: 'ok', model: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6' };
     } catch (error) {
       return { status: 'error', error: error.message };
     }
   }
 }
 
-module.exports = new GeminiService();
+module.exports = new ClaudeService();

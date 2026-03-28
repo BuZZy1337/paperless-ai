@@ -16,9 +16,13 @@ class SetupService {
       const envContent = await fs.readFile(this.envPath, 'utf8');
       const config = {};
       envContent.split('\n').forEach(line => {
-        const [key, value] = line.split('=');
-        if (key && value) {
-          config[key.trim()] = value.trim();
+        const eqIdx = line.indexOf('=');
+        if (eqIdx > 0) {
+          const key = line.slice(0, eqIdx).trim();
+          let value = line.slice(eqIdx + 1).trim();
+          if (value.startsWith('`')) value = value.slice(1);
+          if (value.endsWith('`')) value = value.slice(0, -1);
+          if (key) config[key] = value;
         }
       });
       return config;
@@ -105,6 +109,16 @@ class SetupService {
       });
       return completion.choices && completion.choices.length > 0;
     } catch (error) {
+      // 401/403 = wrong API key → genuinely invalid
+      if (error.status === 401 || error.status === 403) {
+        console.error('Custom AI validation error (authentication failed):', error.message);
+        return false;
+      }
+      // Other 4xx (e.g. 400 from Gemini OpenAI-compat endpoint) = endpoint reachable, treat as valid
+      if (error.status >= 400 && error.status < 500) {
+        console.log(`[DEBUG] Custom AI validation: HTTP ${error.status} received — endpoint reachable, assuming valid config`);
+        return true;
+      }
       console.error('Custom AI validation error:', error);
       return false;
     }

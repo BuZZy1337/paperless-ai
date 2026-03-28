@@ -40,6 +40,7 @@ class FormManager {
         this.systemPrompt = document.getElementById('systemPrompt');
         this.systemPromptBtn = document.getElementById('systemPromptBtn');
         this.disableAutomaticProcessing = document.getElementById('disableAutomaticProcessing');
+        this.debugLogging = document.getElementById('debugLogging');
         this.activateCorrespondents = document.getElementById('activateCorrespondents');
         this.initialize();
     }
@@ -48,6 +49,7 @@ class FormManager {
         this.toggleProviderSettings();
         this.toggleTagsInput();
         this.handleDisableAutomaticProcessing();
+        this.handleDebugLogging();
 
         this.aiProvider.addEventListener('change', () => this.toggleProviderSettings());
         this.tokenLimit.addEventListener('input', () => this.validateTokenLimit());
@@ -56,6 +58,7 @@ class FormManager {
         this.aiProcessedTag.addEventListener('change', () => this.toggleAiTagInput());
         this.usePromptTags.addEventListener('change', () => this.togglePromptTagsInput());
         this.disableAutomaticProcessing.addEventListener('change', () => this.handleDisableAutomaticProcessing());
+        this.debugLogging.addEventListener('change', () => this.handleDebugLogging());
         this.activateCorrespondents.addEventListener('change', () => this.toggleOverwriteCorrespondentSection());
 
         this.initializePasswordToggles();
@@ -106,9 +109,21 @@ class FormManager {
             hiddenInput.name = 'disableAutomaticProcessing';
             this.form.appendChild(hiddenInput);
         }
-        
+
         // Update the hidden input value based on checkbox state
         hiddenInput.value = this.disableAutomaticProcessing.checked ? 'yes' : 'no';
+    }
+
+    handleDebugLogging() {
+        let hiddenInput = document.getElementById('debugLoggingValue');
+        if (!hiddenInput) {
+            hiddenInput = document.createElement('input');
+            hiddenInput.type = 'hidden';
+            hiddenInput.id = 'debugLoggingValue';
+            hiddenInput.name = 'debugLogging';
+            this.form.appendChild(hiddenInput);
+        }
+        hiddenInput.value = this.debugLogging.checked ? 'yes' : 'no';
     }
 
 	toggleProviderSettings() {
@@ -118,6 +133,7 @@ class FormManager {
         const customSettings = document.getElementById('customSettings');
         const azureSettings = document.getElementById('azureSettings');
         const geminiSettings = document.getElementById('geminiSettings');
+        const claudeSettings = document.getElementById('claudeSettings');
 
         // Get all provider-specific fields
         const openaiKey = document.getElementById('openaiKey');
@@ -132,6 +148,9 @@ class FormManager {
         const azureApiVersion = document.getElementById('azureApiVersion');
         const geminiApiKey = document.getElementById('geminiApiKey');
         const geminiModel = document.getElementById('geminiModel');
+        const claudeApiKey = document.getElementById('claudeApiKey');
+        const tokenLimitSection = document.getElementById('tokenLimitSection');
+        const responseTokensSection = document.getElementById('responseTokensSection');
 
         // Restriction settings
         const restrictToExistingTags = document.getElementById('restrictToExistingTags');
@@ -153,6 +172,17 @@ class FormManager {
         if (customSettings) customSettings.classList.add('hidden');
         if (azureSettings) azureSettings.classList.add('hidden');
         if (geminiSettings) geminiSettings.classList.add('hidden');
+        if (claudeSettings) claudeSettings.classList.add('hidden');
+
+        // Show token fields by default, hide for Gemini and Claude
+        const isGemini = provider === 'gemini';
+        const isClaude = provider === 'claude';
+        if (tokenLimitSection) tokenLimitSection.classList.toggle('hidden', isGemini || isClaude);
+        if (responseTokensSection) responseTokensSection.classList.toggle('hidden', isGemini || isClaude);
+
+        // Show "Show whole Prompt" button for Gemini and Claude (both use identical prompt assembly logic)
+        const showFullPromptBtn = document.getElementById('showFullPromptBtn');
+        if (showFullPromptBtn) showFullPromptBtn.classList.toggle('hidden', !isGemini && !isClaude);
         
         // Reset all required fields
         if (openaiKey) openaiKey.required = false;
@@ -166,7 +196,8 @@ class FormManager {
         if (azureDeploymentName) azureDeploymentName.required = false;
         if (azureApiVersion) azureApiVersion.required = false;
         if (geminiApiKey) geminiApiKey.required = false;
-        
+        if (claudeApiKey) claudeApiKey.required = false;
+
         // Show and set required fields based on selected provider
         switch (provider) {
             case 'openai':
@@ -194,6 +225,12 @@ class FormManager {
             case 'gemini':
                 if (geminiSettings) geminiSettings.classList.remove('hidden');
                 if (geminiApiKey) geminiApiKey.required = true;
+                break;
+            case 'claude':
+                if (claudeSettings) claudeSettings.classList.remove('hidden');
+                if (claudeApiKey) claudeApiKey.required = true;
+                handleClaudeTopPToggle(document.getElementById('claudeUseTopP')?.checked || false);
+                handleClaudeThinkingChange(document.getElementById('claudeExtendedThinking')?.value || 'no');
                 break;
         }
     }
@@ -409,11 +446,98 @@ class PromptManager {
     constructor() {
         this.systemPrompt = document.getElementById('systemPrompt');
         this.exampleButton = document.getElementById('systemPromptBtn');
+        this.showFullPromptBtn = document.getElementById('showFullPromptBtn');
+        this.modal = document.getElementById('fullPromptModal');
+        this.modalBackdrop = document.getElementById('fullPromptModalBackdrop');
+        this.modalClose = document.getElementById('fullPromptModalClose');
+        this.modalCloseBtn = document.getElementById('fullPromptModalCloseBtn');
+        this.promptLoading = document.getElementById('fullPromptLoading');
+        this.promptText = document.getElementById('fullPromptText');
+        this.promptError = document.getElementById('fullPromptError');
+        this.copyBtn = document.getElementById('fullPromptCopyBtn');
         this.initialize();
     }
 
     initialize() {
         this.exampleButton.addEventListener('click', () => this.prefillExample());
+        this.showFullPromptBtn.addEventListener('click', () => this.showFullPrompt());
+        this.modalClose.addEventListener('click', () => this.closeModal());
+        this.modalCloseBtn.addEventListener('click', () => this.closeModal());
+        this.modalBackdrop.addEventListener('click', () => this.closeModal());
+        this.copyBtn.addEventListener('click', () => this.copyPrompt());
+    }
+
+    closeModal() {
+        this.modal.classList.add('hidden');
+    }
+
+    copyPrompt() {
+        const text = this.promptText.textContent;
+        if (!text) return;
+
+        const onSuccess = () => {
+            const orig = this.copyBtn.innerHTML;
+            this.copyBtn.innerHTML = '<i class="fas fa-check mr-2"></i>Copied!';
+            setTimeout(() => { this.copyBtn.innerHTML = orig; }, 2000);
+        };
+
+        const fallback = () => {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.style.position = 'fixed';
+            textarea.style.opacity = '0';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            document.execCommand('copy');
+            document.body.removeChild(textarea);
+            onSuccess();
+        };
+
+        if (navigator.clipboard) {
+            navigator.clipboard.writeText(text).then(onSuccess).catch(fallback);
+        } else {
+            fallback();
+        }
+    }
+
+    async showFullPrompt() {
+        this.modal.classList.remove('hidden');
+        this.promptLoading.classList.remove('hidden');
+        this.promptText.classList.add('hidden');
+        this.promptError.classList.add('hidden');
+
+        try {
+            const useExistingData = document.getElementById('useExistingData')?.value || 'no';
+            const restrictToExistingTags = document.getElementById('restrictToExistingTags')?.checked ? 'yes' : 'no';
+            const restrictToExistingCorrespondents = document.getElementById('restrictToExistingCorrespondents')?.checked ? 'yes' : 'no';
+            const restrictToExistingDocumentTypes = document.getElementById('restrictToExistingDocumentTypes')?.checked ? 'yes' : 'no';
+            const customFields = document.getElementById('customFieldsJson')?.value || '{"custom_fields":[]}';
+
+            const response = await fetch('/api/preview-prompt', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    systemPrompt: this.systemPrompt.value,
+                    useExistingData,
+                    restrictToExistingTags,
+                    restrictToExistingCorrespondents,
+                    restrictToExistingDocumentTypes,
+                    customFields
+                })
+            });
+
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Unknown error');
+
+            this.promptText.textContent = data.prompt;
+            this.promptText.classList.remove('hidden');
+        } catch (err) {
+            this.promptError.textContent = 'Error: ' + err.message;
+            this.promptError.classList.remove('hidden');
+        } finally {
+            this.promptLoading.classList.add('hidden');
+        }
     }
 
     prefillExample() {
@@ -459,6 +583,120 @@ For the language:
 - If the language is not clear, use "und" as a placeholder`;
 
         this.systemPrompt.value = examplePrompt;
+    }
+}
+
+async function loadClaudeModels() {
+    const apiKey = document.getElementById('claudeApiKey')?.value;
+    const btn = document.getElementById('loadClaudeModelsBtn');
+    const errorEl = document.getElementById('claudeModelsError');
+    const select = document.getElementById('claudeModel');
+
+    if (!apiKey) {
+        if (errorEl) { errorEl.textContent = 'Please enter an API key first.'; errorEl.classList.remove('hidden'); }
+        return;
+    }
+    if (errorEl) errorEl.classList.add('hidden');
+    if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
+
+    try {
+        const response = await fetch('/api/claude/models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apiKey })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Failed to load models');
+
+        const currentValue = select.value;
+        select.innerHTML = '';
+        data.models.forEach(model => {
+            const option = document.createElement('option');
+            option.value = model.id;
+            option.textContent = model.display_name ? `${model.display_name} (${model.id})` : model.id;
+            if (model.id === currentValue) option.selected = true;
+            select.appendChild(option);
+        });
+        if (!select.value && data.models.length > 0) select.value = data.models[0].id;
+    } catch (error) {
+        if (errorEl) { errorEl.textContent = error.message; errorEl.classList.remove('hidden'); }
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Load Models'; }
+    }
+}
+
+async function loadGeminiModels() {
+    const apiKey = document.getElementById('geminiApiKey')?.value;
+    const btn = document.getElementById('loadGeminiModelsBtn');
+    const errorEl = document.getElementById('geminiModelsError');
+    const select = document.getElementById('geminiModel');
+
+    if (!apiKey) {
+        if (errorEl) { errorEl.textContent = 'Please enter an API key first.'; errorEl.classList.remove('hidden'); }
+        return;
+    }
+    if (errorEl) errorEl.classList.add('hidden');
+    if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
+
+    try {
+        const response = await fetch('/api/gemini/models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apiKey })
+        });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Failed to load models');
+
+        const currentValue = select.value;
+        select.innerHTML = '';
+        data.models.forEach(model => {
+            const option = document.createElement('option');
+            const modelId = (model.name || '').replace(/^models\//, '');
+            option.value = modelId;
+            option.textContent = model.displayName ? `${model.displayName} (${modelId})` : modelId;
+            if (modelId === currentValue) option.selected = true;
+            select.appendChild(option);
+        });
+        if (!select.value && data.models.length > 0) select.value = (data.models[0].name || '').replace(/^models\//, '');
+    } catch (error) {
+        if (errorEl) { errorEl.textContent = error.message; errorEl.classList.remove('hidden'); }
+    } finally {
+        if (btn) { btn.disabled = false; btn.textContent = 'Load Models'; }
+    }
+}
+
+function handleClaudeTopPToggle(useTopP) {
+    const tempSection = document.getElementById('claudeTemperatureSection');
+    const topPSection = document.getElementById('claudeTopPSection');
+    if (tempSection) tempSection.style.display = useTopP ? 'none' : '';
+    if (topPSection) topPSection.style.display = useTopP ? '' : 'none';
+}
+
+function validateClaudeTokenBudget() {
+    const maxTokens = parseInt(document.getElementById('claudeMaxTokens')?.value || '0');
+    const budget = parseInt(document.getElementById('claudeThinkingBudget')?.value || '0');
+    const warning = document.getElementById('claudeMaxTokensWarning');
+    if (warning) warning.classList.toggle('hidden', maxTokens > budget);
+}
+
+function handleClaudeThinkingChange(value) {
+    const slider = document.getElementById('claudeTemperature');
+    const sliderValue = document.getElementById('claudeTemperatureValue');
+    const hint = document.getElementById('claudeTemperatureHint');
+    const budgetSection = document.getElementById('claudeThinkingBudgetSection');
+
+    if (value === 'yes') {
+        if (slider) {
+            slider.value = '1';
+            slider.disabled = true;
+            if (sliderValue) sliderValue.textContent = '1.00';
+        }
+        if (hint) hint.classList.remove('hidden');
+        if (budgetSection) budgetSection.style.display = '';
+    } else {
+        if (slider) slider.disabled = false;
+        if (hint) hint.classList.add('hidden');
+        if (budgetSection) budgetSection.style.display = 'none';
     }
 }
 

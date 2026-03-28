@@ -9,6 +9,7 @@ const documentModel = require('../models/document.js');
 const AIServiceFactory = require('../services/aiServiceFactory');
 const debugService = require('../services/debugService.js');
 const configFile = require('../config/config.js');
+const RestrictionPromptService = require('../services/restrictionPromptService.js');
 const ChatService = require('../services/chatService.js');
 const documentsService = require('../services/documentsService.js');
 const RAGService = require('../services/ragService.js');
@@ -1602,7 +1603,7 @@ async function processDocument(doc, existingTags, existingCorrespondentList, exi
   }else{
     analysis = await aiService.analyzeDocument(content, existingTags, existingCorrespondentList, existingDocumentTypesList, doc.id, null, options);
   }
-  console.log('Repsonse from AI service:', analysis);
+  console.log('Response from AI service:', JSON.stringify(analysis.document));
   if (analysis.error) {
     throw new Error(`[ERROR] Document analysis failed: ${analysis.error}`);
   }
@@ -1719,6 +1720,16 @@ async function buildUpdateData(analysis, doc) {
   // Always include language if provided as it's a core field
   if (analysis.document.language) {
     updateData.language = analysis.document.language;
+  }
+
+  // Guaranteed last step: always add AI-processed tag if configured, regardless of tagging settings
+  if (String(config.addAIProcessedTag).trim().toLowerCase() === 'yes' && config.addAIProcessedTags) {
+    const aiTagNames = String(config.addAIProcessedTags).split(',').map(t => t.trim()).filter(Boolean);
+    const { tagIds: aiTagIds } = await paperlessService.processTags(aiTagNames);
+    if (aiTagIds.length > 0) {
+      updateData.tags = [...new Set([...(updateData.tags || []), ...aiTagIds])];
+      console.log(`[DEBUG] AI-processed tag(s) guaranteed: [${aiTagIds.join(', ')}]`);
+    }
   }
 
   return updateData;
@@ -1900,12 +1911,27 @@ router.get('/setup', async (req, res) => {
       PROCESS_ONLY_NEW_DOCUMENTS: process.env.PROCESS_ONLY_NEW_DOCUMENTS || 'yes',
       USE_EXISTING_DATA: process.env.USE_EXISTING_DATA || 'no',
       DISABLE_AUTOMATIC_PROCESSING: process.env.DISABLE_AUTOMATIC_PROCESSING || 'no',
+      DEBUG_LOGGING: process.env.DEBUG_LOGGING || 'no',
       AZURE_ENDPOINT: process.env.AZURE_ENDPOINT|| '',
       AZURE_API_KEY: process.env.AZURE_API_KEY || '',
       AZURE_DEPLOYMENT_NAME: process.env.AZURE_DEPLOYMENT_NAME || '',
       AZURE_API_VERSION: process.env.AZURE_API_VERSION || '',
 	  GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
-	  GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash'
+	  GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+	  GEMINI_TEMPERATURE: process.env.GEMINI_TEMPERATURE || '0.0',
+      GEMINI_THINKING_BUDGET: process.env.GEMINI_THINKING_BUDGET || '12000',
+      GEMINI_MAX_OUTPUT_TOKENS: process.env.GEMINI_MAX_OUTPUT_TOKENS || '',
+      GEMINI_TOP_P: process.env.GEMINI_TOP_P || '',
+      GEMINI_TOP_K: process.env.GEMINI_TOP_K || '',
+      CLAUDE_API_KEY: process.env.CLAUDE_API_KEY || '',
+      CLAUDE_MODEL: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
+      CLAUDE_MAX_TOKENS: process.env.CLAUDE_MAX_TOKENS || '16000',
+      CLAUDE_TEMPERATURE: process.env.CLAUDE_TEMPERATURE || '1.0',
+      CLAUDE_USE_TOP_P: process.env.CLAUDE_USE_TOP_P || 'no',
+      CLAUDE_TOP_P: process.env.CLAUDE_TOP_P || '0.9',
+      CLAUDE_TOP_K: process.env.CLAUDE_TOP_K || '',
+      CLAUDE_EXTENDED_THINKING: process.env.CLAUDE_EXTENDED_THINKING || 'no',
+      CLAUDE_THINKING_BUDGET: process.env.CLAUDE_THINKING_BUDGET || '10000'
     };
 
     // Check both configuration and users
@@ -2334,6 +2360,112 @@ router.get('/api/tagsCount', async (req, res) => {
   res.json(tags);
 });
 
+router.post('/api/claude/models', authenticateJWT, async (req, res) => {
+  try {
+    const { apiKey } = req.body;
+    if (!apiKey) return res.status(400).json({ error: 'API key required' });
+    const Anthropic = require('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey });
+    const response = await client.models.list({ limit: 100 });
+    return res.json({ models: response.data });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post('/api/gemini/models', authenticateJWT, async (req, res) => {
+  try {
+    const { apiKey } = req.body;
+    if (!apiKey) return res.status(400).json({ error: 'API key required' });
+    const { GoogleGenAI } = require('@google/genai');
+    const ai = new GoogleGenAI({ apiKey });
+    const response = await ai.models.list();
+    const models = [];
+    for await (const model of response) {
+      models.push(model);
+    }
+    return res.json({ models });
+  } catch (error) {
+    return res.status(400).json({ error: error.message });
+  }
+});
+
+router.post('/api/preview-prompt', authenticateJWT, async (req, res) => {
+  try {
+    const {
+      systemPrompt = '',
+      useExistingData = 'no',
+      restrictToExistingTags = 'no',
+      restrictToExistingCorrespondents = 'no',
+      restrictToExistingDocumentTypes = 'no',
+      customFields = '{"custom_fields":[]}'
+    } = req.body;
+
+    // Build customFieldsStr the same way geminiService/claudeService does
+    let customFieldsObj;
+    try {
+      customFieldsObj = JSON.parse(customFields);
+    } catch {
+      customFieldsObj = { custom_fields: [] };
+    }
+    const customFieldsTemplate = {};
+    (customFieldsObj.custom_fields || []).forEach((field, index) => {
+      customFieldsTemplate[index] = {
+        field_name: field.value,
+        value: `Fill this field based on the document content. If the system prompt defines specific rules for '${field.value}', apply them EXACTLY. Otherwise, use the field name as guidance to extract the most relevant value from the document.`
+      };
+    });
+    const customFieldsStr = '"custom_fields": ' + JSON.stringify(customFieldsTemplate, null, 2)
+      .split('\n')
+      .map(line => '    ' + line)
+      .join('\n');
+
+    const mustHavePrompt = configFile.mustHavePrompt
+      .replace('%CUSTOMFIELDS%', customFieldsStr)
+      .replace('%EXISTING_CORRESPONDENTS%', '');
+
+    // Always fetch tags/correspondents — RestrictionPromptService is called unconditionally in the services
+    const [existingTags, existingCorrespondentList, existingDocumentTypesList] = await Promise.all([
+      paperlessService.listTagNames(),
+      paperlessService.listCorrespondentsNames(),
+      paperlessService.listDocumentTypesNames()
+    ]);
+
+    let fullPrompt = '';
+
+    if (useExistingData === 'yes') {
+      const tagsList = existingTags.map(t => t.name || t).filter(Boolean).join(', ');
+      const corrList = existingCorrespondentList.map(c => c.name || c).filter(Boolean).join(', ');
+      const docTypesList = existingDocumentTypesList.map(d => d.name || d).filter(Boolean).join(', ');
+
+      const tagsContext = restrictToExistingTags === 'yes'
+        ? `Tags: ONLY use tags from this existing list: ${tagsList}. Do NOT return any tag not in this list. If no tag matches, return an empty array.`
+        : `Pre-existing tags: ${tagsList}. Prefer these existing tags but you may also create new ones if they are a better fit.`;
+
+      const corrContext = restrictToExistingCorrespondents === 'yes'
+        ? `Correspondent: ONLY use correspondents from this existing list: ${corrList}. Do NOT create new correspondents. If no correspondent in the list matches the document's sender, return null for the correspondent field.`
+        : `Pre-existing correspondents: ${corrList}. When identifying the correspondent, prefer an existing one if the sender is a close match. Use EXACTLY that name. Only return a new name if none of the existing correspondents are a reasonable match.`;
+
+      const docTypeContext = restrictToExistingDocumentTypes === 'yes'
+        ? `Document Type: ONLY use document types from this existing list: ${docTypesList}. Do NOT create new document types. If no document type matches, return null.`
+        : `Pre-existing document types: ${docTypesList}. Prefer these existing document types but you may also create new ones if they are a better fit.`;
+
+      // Correct order: systemPrompt → mustHavePrompt → context block (matches geminiService/claudeService exactly)
+      fullPrompt = systemPrompt.trimEnd() + '\n\n' + mustHavePrompt.trimEnd() + '\n\n' + `${tagsContext}\n\n${corrContext}\n\n${docTypeContext}`;
+    } else {
+      fullPrompt = systemPrompt.trimEnd() + '\n\n' + mustHavePrompt;
+    }
+
+    // Always call RestrictionPromptService — services call it unconditionally after the if/else
+    fullPrompt = RestrictionPromptService.processRestrictionsInPrompt(fullPrompt, existingTags, existingCorrespondentList, {});
+
+    res.json({ prompt: fullPrompt });
+  } catch (error) {
+    console.error('Failed to build preview prompt:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 const documentQueue = [];
 let isProcessing = false;
 
@@ -2708,6 +2840,20 @@ router.get('/settings', async (req, res) => {
     AZURE_API_VERSION: process.env.AZURE_API_VERSION || '',
     GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
     GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+    GEMINI_TEMPERATURE: process.env.GEMINI_TEMPERATURE || '0.0',
+    GEMINI_THINKING_BUDGET: process.env.GEMINI_THINKING_BUDGET || '12000',
+    GEMINI_MAX_OUTPUT_TOKENS: process.env.GEMINI_MAX_OUTPUT_TOKENS || '',
+    GEMINI_TOP_P: process.env.GEMINI_TOP_P || '',
+    GEMINI_TOP_K: process.env.GEMINI_TOP_K || '',
+    CLAUDE_API_KEY: process.env.CLAUDE_API_KEY || '',
+    CLAUDE_MODEL: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
+    CLAUDE_MAX_TOKENS: process.env.CLAUDE_MAX_TOKENS || '16000',
+    CLAUDE_TEMPERATURE: process.env.CLAUDE_TEMPERATURE || '1.0',
+    CLAUDE_USE_TOP_P: process.env.CLAUDE_USE_TOP_P || 'no',
+    CLAUDE_TOP_P: process.env.CLAUDE_TOP_P || '0.9',
+    CLAUDE_TOP_K: process.env.CLAUDE_TOP_K || '',
+    CLAUDE_EXTENDED_THINKING: process.env.CLAUDE_EXTENDED_THINKING || 'no',
+    CLAUDE_THINKING_BUDGET: process.env.CLAUDE_THINKING_BUDGET || '10000',
     RESTRICT_TO_EXISTING_TAGS: process.env.RESTRICT_TO_EXISTING_TAGS || 'no',
     RESTRICT_TO_EXISTING_CORRESPONDENTS: process.env.RESTRICT_TO_EXISTING_CORRESPONDENTS || 'no',
     RESTRICT_TO_EXISTING_DOCUMENT_TYPES: process.env.RESTRICT_TO_EXISTING_DOCUMENT_TYPES || 'no',
@@ -3619,12 +3765,27 @@ router.post('/setup', express.json(), async (req, res) => {
       activateCustomFields,
       customFields,
       disableAutomaticProcessing,
+      debugLogging,
       azureEndpoint,
       azureApiKey,
       azureDeploymentName,
       azureApiVersion,
       geminiApiKey,
-      geminiModel
+      geminiModel,
+      geminiTemperature,
+      geminiThinkingBudget,
+      geminiMaxOutputTokens,
+      geminiTopP,
+      geminiTopK,
+      claudeApiKey,
+      claudeModel,
+      claudeMaxTokens,
+      claudeTemperature,
+      claudeUseTopP,
+      claudeTopP,
+      claudeTopK,
+      claudeExtendedThinking,
+      claudeThinkingBudget
     } = req.body;
 
     // Log setup request with sensitive data redacted
@@ -3743,14 +3904,29 @@ router.post('/setup', express.json(), async (req, res) => {
         ? JSON.stringify({ custom_fields: processedCustomFields }) 
         : '{"custom_fields":[]}',
       DISABLE_AUTOMATIC_PROCESSING: disableAutomaticProcessing ? 'yes' : 'no',
+      DEBUG_LOGGING: debugLogging ? 'yes' : 'no',
       AZURE_ENDPOINT: azureEndpoint || '',
       AZURE_API_KEY: azureApiKey || '',
       AZURE_DEPLOYMENT_NAME: azureDeploymentName || '',
       AZURE_API_VERSION: azureApiVersion || '',
 	  GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
-      GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash'
+      GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+      GEMINI_TEMPERATURE: process.env.GEMINI_TEMPERATURE || '0.0',
+      GEMINI_THINKING_BUDGET: process.env.GEMINI_THINKING_BUDGET || '12000',
+      GEMINI_MAX_OUTPUT_TOKENS: process.env.GEMINI_MAX_OUTPUT_TOKENS || '',
+      GEMINI_TOP_P: process.env.GEMINI_TOP_P || '',
+      GEMINI_TOP_K: process.env.GEMINI_TOP_K || '',
+      CLAUDE_API_KEY: process.env.CLAUDE_API_KEY || '',
+      CLAUDE_MODEL: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
+      CLAUDE_MAX_TOKENS: process.env.CLAUDE_MAX_TOKENS || '16000',
+      CLAUDE_TEMPERATURE: process.env.CLAUDE_TEMPERATURE || '1.0',
+      CLAUDE_USE_TOP_P: process.env.CLAUDE_USE_TOP_P || 'no',
+      CLAUDE_TOP_P: process.env.CLAUDE_TOP_P || '0.9',
+      CLAUDE_TOP_K: process.env.CLAUDE_TOP_K || '',
+      CLAUDE_EXTENDED_THINKING: process.env.CLAUDE_EXTENDED_THINKING || 'no',
+      CLAUDE_THINKING_BUDGET: process.env.CLAUDE_THINKING_BUDGET || '10000'
     };
-    
+
     // Validate AI provider config
     if (aiProvider === 'openai') {
       const isOpenAIValid = await setupService.validateOpenAIConfig(openaiKey);
@@ -3791,6 +3967,12 @@ router.post('/setup', express.json(), async (req, res) => {
       if (!geminiApiKey) {
         return res.status(400).json({
           error: 'Gemini API Key is required.'
+        });
+      }
+    } else if (aiProvider === 'claude') {
+      if (!claudeApiKey) {
+        return res.status(400).json({
+          error: 'Claude API Key is required.'
         });
       }
 	}
@@ -4037,17 +4219,31 @@ router.post('/settings', express.json(), async (req, res) => {
       activateCustomFields,
       customFields,  // Added parameter
       disableAutomaticProcessing,
+      debugLogging,
       azureEndpoint,
       azureApiKey,
       azureDeploymentName,
       azureApiVersion,
       geminiApiKey,
-      geminiModel
+      geminiModel,
+      geminiTemperature,
+      geminiThinkingBudget,
+      geminiMaxOutputTokens,
+      geminiTopP,
+      geminiTopK,
+      claudeApiKey,
+      claudeModel,
+      claudeMaxTokens,
+      claudeTemperature,
+      claudeUseTopP,
+      claudeTopP,
+      claudeTopK,
+      claudeExtendedThinking,
+      claudeThinkingBudget
     } = req.body;
 
-    //replace equal char in system prompt
     const processedPrompt = systemPrompt
-      ? systemPrompt.replace(/\r\n/g, '\n').replace(/=/g, '')
+      ? systemPrompt.replace(/\r\n/g, '\n')
       : '';
 
 
@@ -4083,12 +4279,27 @@ router.post('/settings', express.json(), async (req, res) => {
       ACTIVATE_CUSTOM_FIELDS: process.env.ACTIVATE_CUSTOM_FIELDS || 'yes',
       CUSTOM_FIELDS: process.env.CUSTOM_FIELDS || '{"custom_fields":[]}',  // Added default
       DISABLE_AUTOMATIC_PROCESSING: process.env.DISABLE_AUTOMATIC_PROCESSING || 'no',
+      DEBUG_LOGGING: process.env.DEBUG_LOGGING || 'no',
       AZURE_ENDPOINT: process.env.AZURE_ENDPOINT|| '',
       AZURE_API_KEY: process.env.AZURE_API_KEY || '',
       AZURE_DEPLOYMENT_NAME: process.env.AZURE_DEPLOYMENT_NAME || '',
       AZURE_API_VERSION: process.env.AZURE_API_VERSION || '',
 	  GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
       GEMINI_MODEL: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+      GEMINI_TEMPERATURE: process.env.GEMINI_TEMPERATURE || '0.0',
+      GEMINI_THINKING_BUDGET: process.env.GEMINI_THINKING_BUDGET || '12000',
+      GEMINI_MAX_OUTPUT_TOKENS: process.env.GEMINI_MAX_OUTPUT_TOKENS || '',
+      GEMINI_TOP_P: process.env.GEMINI_TOP_P || '',
+      GEMINI_TOP_K: process.env.GEMINI_TOP_K || '',
+      CLAUDE_API_KEY: process.env.CLAUDE_API_KEY || '',
+      CLAUDE_MODEL: process.env.CLAUDE_MODEL || 'claude-sonnet-4-6',
+      CLAUDE_MAX_TOKENS: process.env.CLAUDE_MAX_TOKENS || '16000',
+      CLAUDE_TEMPERATURE: process.env.CLAUDE_TEMPERATURE || '1.0',
+      CLAUDE_USE_TOP_P: process.env.CLAUDE_USE_TOP_P || 'no',
+      CLAUDE_TOP_P: process.env.CLAUDE_TOP_P || '0.9',
+      CLAUDE_TOP_K: process.env.CLAUDE_TOP_K || '',
+      CLAUDE_EXTENDED_THINKING: process.env.CLAUDE_EXTENDED_THINKING || 'no',
+      CLAUDE_THINKING_BUDGET: process.env.CLAUDE_THINKING_BUDGET || '10000',
       RESTRICT_TO_EXISTING_TAGS: process.env.RESTRICT_TO_EXISTING_TAGS || 'no',
       RESTRICT_TO_EXISTING_CORRESPONDENTS: process.env.RESTRICT_TO_EXISTING_CORRESPONDENTS || 'no',
       RESTRICT_TO_EXISTING_DOCUMENT_TYPES: process.env.RESTRICT_TO_EXISTING_DOCUMENT_TYPES || 'no',
@@ -4202,9 +4413,24 @@ router.post('/settings', express.json(), async (req, res) => {
         if(azureApiKey) updatedConfig.AZURE_API_KEY = azureApiKey;
         if(azureDeploymentName) updatedConfig.AZURE_DEPLOYMENT_NAME = azureDeploymentName;
         if(azureApiVersion) updatedConfig.AZURE_API_VERSION = azureApiVersion;
-      } else if (aiProvider === 'gemini') {                 // NEU START
+      } else if (aiProvider === 'gemini') {
         if (geminiApiKey) updatedConfig.GEMINI_API_KEY = geminiApiKey;
         if (geminiModel) updatedConfig.GEMINI_MODEL = geminiModel;
+        if (geminiTemperature !== undefined) updatedConfig.GEMINI_TEMPERATURE = geminiTemperature;
+        if (geminiThinkingBudget !== undefined) updatedConfig.GEMINI_THINKING_BUDGET = geminiThinkingBudget;
+        if (geminiMaxOutputTokens !== undefined) updatedConfig.GEMINI_MAX_OUTPUT_TOKENS = geminiMaxOutputTokens;
+        if (geminiTopP !== undefined) updatedConfig.GEMINI_TOP_P = geminiTopP;
+        if (geminiTopK !== undefined) updatedConfig.GEMINI_TOP_K = geminiTopK;
+      } else if (aiProvider === 'claude') {
+        if (claudeApiKey) updatedConfig.CLAUDE_API_KEY = claudeApiKey;
+        if (claudeModel) updatedConfig.CLAUDE_MODEL = claudeModel;
+        if (claudeMaxTokens) updatedConfig.CLAUDE_MAX_TOKENS = claudeMaxTokens;
+        if (claudeTemperature !== undefined) updatedConfig.CLAUDE_TEMPERATURE = claudeTemperature;
+        updatedConfig.CLAUDE_USE_TOP_P = claudeUseTopP ? 'yes' : 'no';
+        if (claudeTopP !== undefined) updatedConfig.CLAUDE_TOP_P = claudeTopP;
+        if (claudeTopK !== undefined) updatedConfig.CLAUDE_TOP_K = claudeTopK;
+        if (claudeExtendedThinking) updatedConfig.CLAUDE_EXTENDED_THINKING = claudeExtendedThinking;
+        if (claudeThinkingBudget) updatedConfig.CLAUDE_THINKING_BUDGET = claudeThinkingBudget;
       }
     }
 
@@ -4224,6 +4450,7 @@ router.post('/settings', express.json(), async (req, res) => {
     if (customBaseUrl) updatedConfig.CUSTOM_BASE_URL = customBaseUrl;
     if (customModel) updatedConfig.CUSTOM_MODEL = customModel;
     if (disableAutomaticProcessing) updatedConfig.DISABLE_AUTOMATIC_PROCESSING = disableAutomaticProcessing;
+    updatedConfig.DEBUG_LOGGING = debugLogging ? 'yes' : 'no';
 
     // Update custom fields
     if (processedCustomFields.length > 0 || customFields) {

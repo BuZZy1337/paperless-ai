@@ -383,26 +383,7 @@ class PaperlessService {
         }
       }
   
-      // Add AI-Processed tag if enabled
-      if (process.env.ADD_AI_PROCESSED_TAG === 'yes' && process.env.AI_PROCESSED_TAG_NAME) {
-        try {
-          const aiTagName = process.env.AI_PROCESSED_TAG_NAME;
-          let aiTag = await this.findExistingTag(aiTagName);
-          
-          if (!aiTag) {
-            aiTag = await this.createTagSafely(aiTagName);
-          }
-  
-          if (aiTag && aiTag.id) {
-            tagIds.push(aiTag.id);
-          }
-        } catch (error) {
-          console.error(`[ERROR] processing AI tag "${process.env.AI_PROCESSED_TAG_NAME}":`, error.message);
-          errors.push({ tagName: process.env.AI_PROCESSED_TAG_NAME, error: error.message });
-        }
-      }
-  
-      return { 
+      return {
         tagIds: [...new Set(tagIds)], // Remove any duplicates
         errors 
       };      
@@ -1308,9 +1289,21 @@ async getOrCreateDocumentType(name) {
         console.log(`[DEBUG] Current correspondent:`, currentDoc.correspondent);
         console.log(`[DEBUG] New correspondent:`, updates.correspondent);
                 
-        const combinedTags = [...new Set([...currentDoc.tags, ...updates.tags])];
+        let combinedTags = [...new Set([...currentDoc.tags, ...updates.tags])];
+
+        // Add AI-processed tag if configured
+        if (config.addAIProcessedTag === 'yes' && config.addAIProcessedTags) {
+          await this.ensureTagCache();
+          const aiTag = await this.findExistingTag(config.addAIProcessedTags);
+          if (aiTag && !combinedTags.includes(aiTag.id)) {
+            combinedTags.push(aiTag.id);
+            console.log(`[DEBUG] Added AI-processed tag "${config.addAIProcessedTags}" (ID ${aiTag.id})`);
+          } else if (!aiTag) {
+            console.warn(`[WARN] AI-processed tag "${config.addAIProcessedTags}" not found in Paperless-NGX. Please create it first.`);
+          }
+        }
+
         updates.tags = combinedTags;
-        
         console.log(`[DEBUG] Combined tags:`, combinedTags);
       }
 

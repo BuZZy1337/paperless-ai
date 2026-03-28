@@ -145,8 +145,8 @@ const clearProcessingStatus = db.prepare(`
 `);
 
 const getActiveProcessing = db.prepare(`
-  SELECT * FROM processing_status 
-  WHERE start_time >= datetime('now', '-30 seconds')
+  SELECT * FROM processing_status
+  WHERE start_time >= datetime('now', '-5 minutes')
   ORDER BY start_time DESC LIMIT 1
 `);
 

@@ -4,6 +4,7 @@ const ollamaService = require('./ollamaService');
 const customService = require('./customService');
 const azureService = require('./azureService');
 const geminiService = require('./geminiService');
+const claudeService = require('./claudeService');
 
 class AIServiceFactory {
   static getService() {
@@ -19,6 +20,8 @@ class AIServiceFactory {
         return azureService;
       case 'gemini':
         return geminiService;
+      case 'claude':
+        return claudeService;
     }
   }
 }
